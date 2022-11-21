@@ -3,11 +3,11 @@
   "displayName": "QOI Viewer",
   "description": "QOI Viewer for Visual Studio Code",
   "publisher": "Mupceet",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/Mupceet/qoi-viewer"
-	},
-  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mupceet/qoi-viewer"
+  },
+  "version": "0.1.0",
   "icon": "images/qoi_logo.png",
   "engines": {
     "vscode": "^1.73.0"
@@ -16,14 +16,15 @@
     "Other"
   ],
   "activationEvents": [
-    "onCustomEditor:qoi-viewer.imagepreview"
+    "onCustomEditor:qoi.previewEditor"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "customEditors": [
       {
-        "viewType": "qoi-viewer.imagepreview",
-        "displayName": "Image Preview",
+        "viewType": "qoi.previewEditor",
+        "displayName": "%customEditors.displayName%",
+        "priority": "default",
         "selector": [
           {
             "filenamePattern": "*.qoi"
@@ -31,46 +32,32 @@
         ]
       }
     ],
-    "configuration": {
-			"title": "QOI Viewer Image Preview",
-			"properties": {
-				"qoi-viewer.imagepreview.panelBackgroundColor": {
-					"type": "string",
-					"scope": "application",
-					"default": "#ec5340",
-					"description": "Background color of the zoom panel."
-				},
-				"qoi-viewer.imagepreview.panelButtonColor": {
-					"type": "string",
-					"scope": "application",
-					"default": "#dd4535",
-					"description": "Button color in the zoom panel."
-				},
-				"qoi-viewer.imagepreview.defaultPreviewScale": {
-					"type": "number",
-					"scope": "window",
-					"default": 1.0,
-					"description": "Default zoom level for image preview."
-        		},
-				"qoi-viewer.imagepreview.autoScalingMode": {
-					"type": "boolean",
-					"scope": "window",
-					"default": false,
-					"description": "Use Auto Scaling Mode."
-				},
-				"qoi-viewer.imagepreview.uiPosition": {
-					"type": "string",
-					"scope": "window",
-					"default": "left",
-					"description": "Panel UI position. (left or right)",
-					"enum": ["left", "right"],
-					"enumDescriptions": [
-						"Show UI panel in the left side of the preview area",
-						"Show UI panel in the right side of the preview area"
-					]
-				}
-			}
-		}
+    "commands": [
+      {
+        "command": "qoi.zoomIn",
+        "title": "%command.zoomIn%",
+        "category": "Image Preview"
+      },
+      {
+        "command": "qoi.zoomOut",
+        "title": "%command.zoomOut%",
+        "category": "Image Preview"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "qoi.zoomIn",
+          "when": "activeCustomEditorId == 'qoi.previewEditor'",
+          "group": "1_qoi"
+        },
+        {
+          "command": "qoi.zoomOut",
+          "when": "activeCustomEditorId == 'qoi.previewEditor'",
+          "group": "1_qoi"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -84,6 +71,7 @@
     "@types/glob": "^8.0.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "16.x",
+    "@types/pngjs": "^6.0.1",
     "@types/vscode": "^1.73.0",
     "@typescript-eslint/eslint-plugin": "^5.42.0",
     "@typescript-eslint/parser": "^5.42.0",
@@ -94,7 +82,9 @@
     "typescript": "^4.8.4"
   },
   "dependencies": {
+    "pngjs": "^6.0.0",
     "qoi-img": "^2.1.0",
-    "validate-color": "^2.2.1"
+    "validate-color": "^2.2.1",
+    "vscode-nls": "^5.2.0"
   }
 }

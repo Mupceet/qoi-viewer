@@ -1,28 +1,36 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 import * as vscode from 'vscode';
-import ImagePreviewProvider  from './preview';
+import { BinarySizeStatusBarEntry } from './binarySizeStatusBarEntry';
+import { PreviewManager } from './preview';
+import { SizeStatusBarEntry } from './sizeStatusBarEntry';
+import { ZoomStatusBarEntry } from './zoomStatusBarEntry';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+	console.log("activate", context.extension.id);
+	const sizeStatusBarEntry = new SizeStatusBarEntry();
+	context.subscriptions.push(sizeStatusBarEntry);
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "test" is now active!');
+	const binarySizeStatusBarEntry = new BinarySizeStatusBarEntry();
+	context.subscriptions.push(binarySizeStatusBarEntry);
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	let disposable = vscode.commands.registerCommand('test.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from VS Code!');
-	});
+	const zoomStatusBarEntry = new ZoomStatusBarEntry();
+	context.subscriptions.push(zoomStatusBarEntry);
 
-	context.subscriptions.push(disposable);
-	context.subscriptions.push(ImagePreviewProvider.register(context));
+	const previewManager = new PreviewManager(context.extensionUri, sizeStatusBarEntry, binarySizeStatusBarEntry, zoomStatusBarEntry);
+
+	context.subscriptions.push(vscode.window.registerCustomEditorProvider(PreviewManager.viewType, previewManager, {
+		supportsMultipleEditorsPerDocument: true,
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('qoi.zoomIn', () => {
+		previewManager.activePreview?.zoomIn();
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('qoi.zoomOut', () => {
+		previewManager.activePreview?.zoomOut();
+	}));
 }
-
-// This method is called when your extension is deactivated
-export function deactivate() {}
