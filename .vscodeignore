@@ -1,9 +1,12 @@
+images/qoi_test_images/**
 .vscode/**
 .vscode-test/**
-images/qoi_test_images/**
+out/**
+node_modules/**
 src/**
 .gitignore
 .yarnrc
+webpack.config.js
 vsc-extension-quickstart.md
 **/tsconfig.json
 **/.eslintrc.json
