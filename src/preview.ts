@@ -12,7 +12,7 @@ import { BinarySizeStatusBarEntry } from './binarySizeStatusBarEntry';
 import { PNG } from 'pngjs';
 import * as fs from 'fs';
 import { Stream } from 'stream';
-import { QOIChannels, QOIdecode } from 'qoi-img';
+import { QOI } from './decode';
 
 const localize = nls.loadMessageBundle();
 
@@ -252,7 +252,7 @@ class Preview extends Disposable {
 		}
 		try {
 			const data = fs.readFileSync(resource.fsPath);
-			let qoi = QOIdecode(data, QOIChannels.RGBA);
+			let qoi = QOI.decode(data);
 			var png = new PNG({
 				width: qoi.width,
 				height: qoi.height
