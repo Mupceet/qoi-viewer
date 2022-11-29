@@ -25,12 +25,4 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.window.registerCustomEditorProvider(PreviewManager.viewType, previewManager, {
 		supportsMultipleEditorsPerDocument: true,
 	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand('qoi.zoomIn', () => {
-		previewManager.activePreview?.zoomIn();
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand('qoi.zoomOut', () => {
-		previewManager.activePreview?.zoomOut();
-	}));
 }
