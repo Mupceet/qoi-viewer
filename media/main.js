@@ -75,7 +75,8 @@
 
 	// Elements
 	const container = document.body;
-	const image = document.createElement('img');
+	let image = document.createElement('img');
+	let canvas = undefined;
 
 	function updateScale(newScale) {
 		if (!image || !hasLoadedImage || !image.parentElement) {
@@ -324,7 +325,60 @@
 			return;
 		}
 
-		switch (e.data.type) {
+			switch (e.data.type) {
+
+						case 'qoiPixelsInit': {
+							const m = e.data;
+							const width = m.width;
+							const height = m.height;
+							const channels = m.channels;
+							// create canvas placeholder
+							if (!canvas) {
+								canvas = document.createElement('canvas');
+								canvas.width = width;
+								canvas.height = height;
+								canvas.naturalWidth = width;
+								canvas.naturalHeight = height;
+								image = canvas;
+								document.body.append(canvas);
+							}
+							break;
+						}
+
+						case 'qoiPixelsChunk': {
+							const m = e.data;
+							const offsetY = m.offsetY;
+							const rows = m.rows;
+							const channels = m.channels || 4; // may be undefined on chunks
+							let u8 = new Uint8ClampedArray(m.data);
+							// expand RGB->RGBA if needed
+							if (channels === 3) {
+								const src = u8;
+								const dst = new Uint8ClampedArray((src.length / 3) * 4);
+								for (let i = 0, j = 0; i < src.length; i += 3, j += 4) {
+									dst[j] = src[i];
+									dst[j + 1] = src[i + 1];
+									dst[j + 2] = src[i + 2];
+									dst[j + 3] = 255;
+								}
+								u8 = dst;
+							}
+							const width = canvas.width;
+							const ctx = canvas.getContext('2d');
+							const img = new ImageData(u8, width, rows);
+							ctx.putImageData(img, 0, offsetY);
+							vscode.postMessage({ type: 'size', value: `${canvas.naturalWidth}x${canvas.naturalHeight}` });
+							break;
+						}
+
+						case 'qoiPixelsDone': {
+							// finalization: mark loaded
+							document.body.classList.remove('loading');
+							document.body.classList.add('ready');
+							hasLoadedImage = true;
+							break;
+						}
+
 			case 'setScale':
 				updateScale(e.data.scale);
 				break;
@@ -340,6 +394,59 @@
 			case 'zoomOut':
 				zoomOut();
 				break;
+
+			case 'qoiPixels': {
+				// e.data.data is an ArrayBuffer (transferable)
+				const m = e.data;
+				const width = m.width;
+				const height = m.height;
+				const channels = m.channels;
+				let u8 = new Uint8ClampedArray(m.data);
+				// If channels === 3, expand to RGBA by adding opaque alpha
+				if (channels === 3) {
+					const src = u8;
+					const dst = new Uint8ClampedArray((src.length / 3) * 4);
+					for (let i = 0, j = 0; i < src.length; i += 3, j += 4) {
+						dst[j] = src[i];
+						dst[j + 1] = src[i + 1];
+						dst[j + 2] = src[i + 2];
+						dst[j + 3] = 255;
+					}
+					u8 = dst;
+				}
+				// Create canvas if not present
+				if (canvas) {
+					canvas.width = width;
+					canvas.height = height;
+				} else {
+					canvas = document.createElement('canvas');
+					canvas.width = width;
+					canvas.height = height;
+					// expose naturalWidth/Height so existing logic can use them
+					canvas.naturalWidth = width;
+					canvas.naturalHeight = height;
+					// replace the `image` variable with the canvas element so other code paths continue to work
+					image = canvas;
+				}
+				const ctx = canvas.getContext('2d');
+				const img = new ImageData(u8, width, height);
+				ctx.putImageData(img, 0, 0);
+				// report size to extension
+				vscode.postMessage({ type: 'size', value: `${width}x${height}` });
+				document.body.classList.remove('loading');
+				document.body.classList.add('ready');
+				if (!canvas.parentElement) {
+					document.body.append(canvas);
+				}
+				hasLoadedImage = true;
+				break;
+			}
+
+			case 'qoiError': {
+				document.body.classList.add('error');
+				document.body.classList.remove('loading');
+				break;
+			}
 		}
 	});
 }());

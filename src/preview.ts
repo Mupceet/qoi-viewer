@@ -250,21 +250,61 @@ class Preview extends Disposable {
 				return this.emptyPngDataUri;
 			}
 		}
-		try {
-			const data = fs.readFileSync(resource.fsPath);
-			let qoi = QOI.decode(data, QOI.QOIChannels.RGBA);
-			var png = new PNG({
-				width: qoi.width,
-				height: qoi.height
-			});
-			png.data = qoi.pixels;
-			const promise = stream2buffer(png.pack());
-			const buf = await promise;
-			return `data:image/png;base64,${buf.toString('base64')}`;
-		} catch (ex) {
-			return this.emptyPngDataUri;
-		}
+		// For large images encoding to PNG and base64 is expensive.
+		// Instead, schedule sending raw pixel buffer to the webview as a transferable ArrayBuffer
+		// and return a small placeholder image src. The webview will receive `qoiPixels` message
+		// and render using canvas.
+		this.sendPixels(resource);
+		return this.emptyPngDataUri;
 
+	}
+
+	private async sendPixels(resource: vscode.Uri) {
+		try {
+			const data = await fs.promises.readFile(resource.fsPath);
+			let qoi = QOI.decode(data as Buffer, QOI.QOIChannels.RGBA);
+			const buf: Buffer = qoi.pixels as Buffer;
+
+			const bytesPerPixel = qoi.channels; // typically 4
+			const rowBytes = qoi.width * bytesPerPixel;
+			const totalBytes = buf.length;
+
+			// If small enough, send in a single transferable message (backwards compatible)
+			const CHUNK_BYTE_LIMIT = 512 * 1024; // 512KB per chunk target
+			if (totalBytes <= CHUNK_BYTE_LIMIT) {
+				const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+				(this.webviewEditor.webview as any).postMessage({
+					type: 'qoiPixels',
+					width: qoi.width,
+					height: qoi.height,
+					channels: qoi.channels,
+					data: ab
+				}, [ab]);
+				return;
+			}
+
+			// For large images, send an init message then many chunk messages to reduce peak memory
+			(this.webviewEditor.webview as any).postMessage({ type: 'qoiPixelsInit', width: qoi.width, height: qoi.height, channels: qoi.channels });
+
+			const maxRowsPerChunk = Math.max(1, Math.floor(CHUNK_BYTE_LIMIT / rowBytes));
+			for (let offsetY = 0; offsetY < qoi.height; offsetY += maxRowsPerChunk) {
+				const rows = Math.min(maxRowsPerChunk, qoi.height - offsetY);
+				const start = offsetY * rowBytes;
+				const end = start + rows * rowBytes;
+				const slice = buf.subarray(start, end);
+				const ab = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+				(this.webviewEditor.webview as any).postMessage({
+					type: 'qoiPixelsChunk',
+					offsetY: offsetY,
+					rows: rows,
+					data: ab
+				}, [ab]);
+			}
+
+			(this.webviewEditor.webview as any).postMessage({ type: 'qoiPixelsDone' });
+		} catch (ex) {
+			this.webviewEditor.webview.postMessage({ type: 'qoiError' });
+		}
 	}
 
 	private extensionResource(path: string) {

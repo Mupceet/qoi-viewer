@@ -9,7 +9,8 @@ html, body {
 	text-align: center;
 }
 
-body img {
+body img,
+body canvas {
 	max-width: none;
 	max-height: none;
 }
@@ -31,36 +32,42 @@ body img {
 	box-sizing: border-box;
 }
 
-.container.image img {
+.container.image img,
+.container.image canvas {
 	padding: 0;
 	background-position: 0 0, 8px 8px;
 	background-size: 16px 16px;
 	border: 1px solid var(--vscode-qoi-border);
 }
 
-.container.image img {
+.container.image img,
+.container.image canvas {
 	background-image:
 		linear-gradient(45deg, rgb(230, 230, 230) 25%, transparent 25%, transparent 75%, rgb(230, 230, 230) 75%, rgb(230, 230, 230)),
 		linear-gradient(45deg, rgb(230, 230, 230) 25%, transparent 25%, transparent 75%, rgb(230, 230, 230) 75%, rgb(230, 230, 230));
 }
 
-.vscode-dark.container.image img {
+.vscode-dark.container.image img,
+.vscode-dark.container.image canvas {
 	background-image:
 		linear-gradient(45deg, rgb(20, 20, 20) 25%, transparent 25%, transparent 75%, rgb(20, 20, 20) 75%, rgb(20, 20, 20)),
 		linear-gradient(45deg, rgb(20, 20, 20) 25%, transparent 25%, transparent 75%, rgb(20, 20, 20) 75%, rgb(20, 20, 20));
 }
 
-.container img.pixelated {
+.container img.pixelated,
+.container canvas.pixelated {
 	image-rendering: pixelated;
 }
 
-.container img.scale-to-fit {
+.container img.scale-to-fit,
+.container canvas.scale-to-fit {
 	max-width: calc(100% - 20px);
 	max-height: calc(100% - 20px);
 	object-fit: contain;
 }
 
-.container img {
+.container img,
+.container canvas {
 	margin: auto;
 }
 
