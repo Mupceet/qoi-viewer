@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/Mupceet/qoi-viewer"
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "icon": "images/qoi_logo.png",
   "engines": {
     "vscode": "^1.64.0"
