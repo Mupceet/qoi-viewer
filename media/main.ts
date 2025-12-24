@@ -263,6 +263,23 @@ declare function acquireVsCodeApi(): any;
     }, { passive: true });
 
     container.classList.add('image');
+
+    // Disable browser context menu (remove right-click cut/copy/paste options)
+    container.addEventListener('contextmenu', (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    });
+
+    // Add Save as PNG button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+    saveBtn.title = 'Save as PNG';
+    saveBtn.textContent = 'Save PNG';
+    saveBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'savePng' });
+    });
+    document.body.append(saveBtn);
     image.classList.add('scale-to-fit');
 
     image.addEventListener('load', () => {

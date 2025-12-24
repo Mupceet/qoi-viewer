@@ -34,6 +34,7 @@ export class PreviewManager implements vscode.CustomReadonlyEditorProvider {
 		return { uri, dispose: () => { } };
 	}
 
+
 	public async resolveCustomEditor(
 		document: vscode.CustomDocument,
 		webviewEditor: vscode.WebviewPanel,
@@ -124,6 +125,12 @@ class Preview extends Disposable {
 						vscode.commands.executeCommand('vscode.openWith', resource, 'default', webviewEditor.viewColumn);
 						break;
 					}
+
+				case 'savePng':
+					{
+						this.savePng();
+						break;
+					}
 			}
 		}));
 
@@ -178,6 +185,24 @@ class Preview extends Disposable {
 	public zoomOut() {
 		if (this._previewState === PreviewState.Active) {
 			this.webviewEditor.webview.postMessage({ type: 'zoomOut' });
+		}
+	}
+
+	private async savePng() {
+		try {
+			const data = await fs.promises.readFile(this.resource.fsPath);
+			let qoi = QOI.decode(data as Buffer, QOI.QOIChannels.RGBA);
+			const png = new PNG({ width: qoi.width, height: qoi.height });
+			png.data = qoi.pixels as Buffer;
+			const buf = await stream2buffer(png.pack());
+
+			const defaultUri = this.resource.with({ path: this.resource.path.replace(/\.[^.]+$/, '.png') });
+			const uri = await vscode.window.showSaveDialog({ defaultUri });
+			if (!uri) { return; }
+			await vscode.workspace.fs.writeFile(uri, buf);
+			vscode.window.showInformationMessage(localize('preview.saveSuccess', 'Image saved'));
+		} catch (ex) {
+			vscode.window.showErrorMessage(localize('preview.saveError', 'Failed to save image'));
 		}
 	}
 
