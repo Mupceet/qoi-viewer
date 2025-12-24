@@ -264,24 +264,15 @@
             vscode.setState({ scale: entry.scale, offsetX: window.scrollX, offsetY: window.scrollY });
     }, { passive: true });
     container.classList.add('image');
-    // Disable browser context menu (remove right-click cut/copy/paste options)
+    // Right-click: ask extension to show native QuickPick with actions (only Save)
     container.addEventListener('contextmenu', (e) => {
+        if (!image || !hasLoadedImage)
+            return;
         e.preventDefault();
         e.stopPropagation();
+        vscode.postMessage({ type: 'showContextMenu' });
         return false;
     });
-    // Add Save as PNG button
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'save-btn';
-    saveBtn.title = 'Save as PNG';
-    saveBtn.textContent = 'Save PNG';
-    saveBtn.addEventListener('click', (e) => {
-        // Prevent the click from bubbling to the container which would trigger zoom
-        e.stopPropagation();
-        e.preventDefault();
-        vscode.postMessage({ type: 'savePng' });
-    });
-    document.body.append(saveBtn);
     image.classList.add('scale-to-fit');
     image.addEventListener('load', () => {
         if (hasLoadedImage)

@@ -104,7 +104,7 @@ class Preview extends Disposable {
 			]
 		};
 
-		this._register(webviewEditor.webview.onDidReceiveMessage(message => {
+		this._register(webviewEditor.webview.onDidReceiveMessage(async message => {
 			switch (message.type) {
 				case 'size':
 					{
@@ -128,6 +128,16 @@ class Preview extends Disposable {
 				case 'savePng':
 					{
 						this.savePng();
+						break;
+					}
+
+				case 'showContextMenu':
+					{
+						const saveLabel = localize('preview.saveAsPng', 'Save as PNG');
+						const pick = await vscode.window.showQuickPick([saveLabel], { placeHolder: '' });
+						if (pick === saveLabel) {
+							this.savePng();
+						}
 						break;
 					}
 			}
