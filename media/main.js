@@ -275,7 +275,10 @@
     saveBtn.className = 'save-btn';
     saveBtn.title = 'Save as PNG';
     saveBtn.textContent = 'Save PNG';
-    saveBtn.addEventListener('click', () => {
+    saveBtn.addEventListener('click', (e) => {
+        // Prevent the click from bubbling to the container which would trigger zoom
+        e.stopPropagation();
+        e.preventDefault();
         vscode.postMessage({ type: 'savePng' });
     });
     document.body.append(saveBtn);
