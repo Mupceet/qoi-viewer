@@ -34,7 +34,6 @@ export class PreviewManager implements vscode.CustomReadonlyEditorProvider {
 		return { uri, dispose: () => { } };
 	}
 
-
 	public async resolveCustomEditor(
 		document: vscode.CustomDocument,
 		webviewEditor: vscode.WebviewPanel,

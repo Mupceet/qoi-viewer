@@ -28,8 +28,6 @@
     const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : { getState: () => undefined, setState: (_) => { }, postMessage: (_) => { } };
     const initialState = vscode.getState() || { scale: 'fit', offsetX: 0, offsetY: 0 };
     let scale = initialState.scale || 'fit';
-    let ctrlPressed = false;
-    let altPressed = false;
     let hasLoadedImage = false;
     let consumeClick = true;
     let isActive = false;
@@ -74,25 +72,28 @@
             vscode.setState({ scale: scale, offsetX: newScrollX, offsetY: newScrollY });
         }
         vscode.postMessage({ type: 'zoom', value: scale });
+        // update pan cursor state
+        updatePanCursor();
+    }
+    function updatePanCursor() {
+        if (!image || scale === 'fit') {
+            container.classList.remove('can-pan');
+            return;
+        }
+        const naturalW = image.naturalWidth || image.width || 0;
+        const naturalH = image.naturalHeight || image.height || 0;
+        const scaledW = naturalW * scale;
+        const scaledH = naturalH * scale;
+        if (scaledW > container.clientWidth || scaledH > container.clientHeight) {
+            container.classList.add('can-pan');
+        }
+        else {
+            container.classList.remove('can-pan');
+        }
     }
     function setActive(value) {
         isActive = value;
-        if (value) {
-            if (isMac ? altPressed : ctrlPressed) {
-                container.classList.remove('zoom-in');
-                container.classList.add('zoom-out');
-            }
-            else {
-                container.classList.remove('zoom-out');
-                container.classList.add('zoom-in');
-            }
-        }
-        else {
-            ctrlPressed = false;
-            altPressed = false;
-            container.classList.remove('zoom-out');
-            container.classList.remove('zoom-in');
-        }
+        // keep default cursor; pan cursor is managed by updatePanCursor()
     }
     function firstZoom() {
         if (!image || !hasLoadedImage) {
@@ -123,38 +124,20 @@
         }
         updateScale(zoomLevels[i] || MIN_SCALE);
     }
-    window.addEventListener('keydown', (e) => {
-        if (!image || !hasLoadedImage)
-            return;
-        ctrlPressed = e.ctrlKey;
-        altPressed = e.altKey;
-        if (isMac ? altPressed : ctrlPressed) {
-            container.classList.remove('zoom-in');
-            container.classList.add('zoom-out');
-        }
-    });
-    window.addEventListener('keyup', (e) => {
-        if (!image || !hasLoadedImage)
-            return;
-        ctrlPressed = e.ctrlKey;
-        altPressed = e.altKey;
-        if (!(isMac ? altPressed : ctrlPressed)) {
-            container.classList.remove('zoom-out');
-            container.classList.add('zoom-in');
-        }
-    });
+    // no special key handling for zoom; wheel directly zooms now
     container.addEventListener('mousedown', (e) => {
         if (!image || !hasLoadedImage)
             return;
         if (e.button !== 0)
             return;
-        ctrlPressed = e.ctrlKey;
-        altPressed = e.altKey;
         consumeClick = !isActive;
-        // start potential panning if zoomed
-        if (scale !== 'fit') {
+        // start potential panning if zoomed and pannable
+        if (scale !== 'fit' && container.classList.contains('can-pan')) {
             isDragging = false;
             panStart = { x: e.clientX, y: e.clientY, scrollX: window.scrollX, scrollY: window.scrollY };
+        }
+        else {
+            panStart = undefined;
         }
     });
     container.addEventListener('click', (e) => {
@@ -170,21 +153,16 @@
             consumeClick = false;
             return;
         }
+        // simple click: zoom in (or first zoom if fit)
         if (scale === 'fit')
             firstZoom();
-        if (!(isMac ? altPressed : ctrlPressed))
-            zoomIn();
-        else
-            zoomOut();
+        zoomIn();
     });
     container.addEventListener('wheel', (e) => {
-        if (e.ctrlKey)
-            e.preventDefault();
         if (!image || !hasLoadedImage)
             return;
-        const isScrollWheelKeyPressed = isMac ? altPressed : ctrlPressed;
-        if (!isScrollWheelKeyPressed && !e.ctrlKey)
-            return;
+        // wheel directly controls zoom now
+        e.preventDefault();
         if (scale === 'fit')
             firstZoom();
         let delta = e.deltaY > 0 ? 1 : -1;
@@ -201,11 +179,13 @@
             if (Math.hypot(dx, dy) < 4)
                 return;
             isDragging = true;
+            container.classList.add('panning');
         }
         window.scrollTo(panStart.scrollX + dx, panStart.scrollY + dy);
     }, { passive: true });
     window.addEventListener('mouseup', (_e) => {
         panStart = undefined;
+        container.classList.remove('panning');
         // keep isDragging flag until click handler clears it
     });
     // Touch handlers for panning (mobile / touch devices)

@@ -75,8 +75,16 @@ body canvas {
 	cursor: zoom-in;
 }
 
-.container.ready.zoom-out {
-	cursor: zoom-out;
+.container.ready {
+	cursor: default;
+}
+
+.container.can-pan {
+	cursor: grab;
+}
+
+.container.panning {
+	cursor: grabbing;
 }
 
 .container .embedded-link,
