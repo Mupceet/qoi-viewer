@@ -15,9 +15,6 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCustomEditor:qoi.previewEditor"
-  ],
   "main": "./dist/extension.js",
   "contributes": {
     "customEditors": [
@@ -35,8 +32,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "webpack",
-    "watch": "webpack --watch",
+    "build-media": "tsc --lib DOM,ES2020 --target ES2020 --module none media/main.ts --outFile media/main.js",
+    "watch-media": "tsc --lib DOM,ES2020 --target ES2020 --module none media/main.ts --outFile media/main.js --watch",
+    "compile": "npm run build-media && webpack",
+    "watch": "npm run build-media && webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
