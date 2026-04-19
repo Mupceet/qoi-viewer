@@ -4,15 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
 import { PreviewStatusBarEntry } from './ownedStatusBarEntry';
 
-const localize = nls.loadMessageBundle();
-
-export class SizeStatusBarEntry extends PreviewStatusBarEntry {
+export class InfoStatusBarEntry extends PreviewStatusBarEntry {
 
 	constructor() {
-		super('status.qoi.size', localize('sizeStatusBar.name', "Image Size"), vscode.StatusBarAlignment.Right, 101 /* to the left of editor status (100) */);
+		super('status.qoi.info', 'Image Info', vscode.StatusBarAlignment.Right, 101);
 	}
 
 	public show(owner: string, text: string) {

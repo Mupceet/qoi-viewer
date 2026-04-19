@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/Mupceet/qoi-viewer"
   },
-  "version": "0.3.1",
+  "version": "0.4.0",
   "icon": "images/qoi_logo.png",
   "engines": {
     "vscode": "^1.64.0"
@@ -16,12 +16,12 @@
     "Other"
   ],
   "activationEvents": [ ],
-  "main": "./dist/extension.js",
+  "main": "./out/extension.js",
   "contributes": {
     "customEditors": [
       {
         "viewType": "qoi.previewEditor",
-        "displayName": "Image Preview",
+        "displayName": "QOI Viewer",
         "priority": "default",
         "selector": [
           {
@@ -29,40 +29,48 @@
           }
         ]
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "qoiViewer.exportPng",
+        "title": "Export as PNG",
+        "category": "QOI Viewer"
+      },
+      {
+        "command": "qoiViewer.exportPngFile",
+        "title": "Export QOI as PNG",
+        "category": "QOI Viewer"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "qoiViewer.exportPng",
+          "when": "activeCustomEditorId == 'qoi.previewEditor'"
+        },
+        {
+          "command": "qoiViewer.exportPngFile",
+          "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "qoiViewer.exportPngFile",
+          "when": "resourceExtname == '.qoi'",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
-    "build-media": "tsc --lib DOM,ES2020 --target ES2020 --module none media/main.ts --outFile media/main.js",
-    "watch-media": "tsc --lib DOM,ES2020 --target ES2020 --module none media/main.ts --outFile media/main.js --watch",
-    "compile": "npm run build-media && webpack",
-    "watch": "npm run build-media && webpack --watch",
-    "package": "webpack --mode production --devtool hidden-source-map",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "clean": "node -e \"fs.rmSync('out',{recursive:true,force:true})\"",
+    "vscode:prepublish": "npm run clean && npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
-    "@types/glob": "^8.0.0",
-    "@types/mocha": "^10.0.0",
-    "@types/node": "16.x",
-    "@types/pngjs": "^6.0.1",
+    "@types/node": "^20.19.39",
     "@types/vscode": "^1.64.0",
-    "@typescript-eslint/eslint-plugin": "^5.42.0",
-    "@typescript-eslint/parser": "^5.42.0",
-    "@vscode/test-electron": "^2.2.0",
-    "eslint": "^8.26.0",
-    "glob": "^8.0.3",
-    "mocha": "^10.1.0",
-    "ts-loader": "^9.4.1",
-    "typescript": "^4.8.4",
-    "webpack": "^5.75.0",
-    "webpack-cli": "^5.0.0"
-  },
-  "dependencies": {
-    "pngjs": "^6.0.0",
-    "vscode-nls": "^5.2.0"
+    "typescript": "^5.3.0"
   }
 }

@@ -4,25 +4,35 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { BinarySizeStatusBarEntry } from './binarySizeStatusBarEntry';
-import { PreviewManager } from './preview';
-import { SizeStatusBarEntry } from './sizeStatusBarEntry';
+import { QoiEditorProvider } from './preview';
+import { InfoStatusBarEntry } from './infoStatusBarEntry';
 import { ZoomStatusBarEntry } from './zoomStatusBarEntry';
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log("activate", context.extension.id);
-	const sizeStatusBarEntry = new SizeStatusBarEntry();
-	context.subscriptions.push(sizeStatusBarEntry);
+    const infoStatusBarEntry = new InfoStatusBarEntry();
+    context.subscriptions.push(infoStatusBarEntry);
 
-	const binarySizeStatusBarEntry = new BinarySizeStatusBarEntry();
-	context.subscriptions.push(binarySizeStatusBarEntry);
+    const zoomStatusBarEntry = new ZoomStatusBarEntry();
+    context.subscriptions.push(zoomStatusBarEntry);
 
-	const zoomStatusBarEntry = new ZoomStatusBarEntry();
-	context.subscriptions.push(zoomStatusBarEntry);
+    const provider = new QoiEditorProvider(context, infoStatusBarEntry, zoomStatusBarEntry);
 
-	const previewManager = new PreviewManager(context.extensionUri, sizeStatusBarEntry, binarySizeStatusBarEntry, zoomStatusBarEntry);
-
-	context.subscriptions.push(vscode.window.registerCustomEditorProvider(PreviewManager.viewType, previewManager, {
-		supportsMultipleEditorsPerDocument: true,
-	}));
+    context.subscriptions.push(
+        vscode.window.registerCustomEditorProvider(
+            QoiEditorProvider.viewType,
+            provider,
+            {
+                webviewOptions: { retainContextWhenHidden: true },
+                supportsMultipleEditorsPerDocument: false,
+            }
+        ),
+        vscode.commands.registerCommand('qoiViewer.exportPng', () => {
+            provider.exportPng();
+        }),
+        vscode.commands.registerCommand('qoiViewer.exportPngFile', (uri: vscode.Uri) => {
+            provider.exportPngFile(uri);
+        })
+    );
 }
+
+export function deactivate() {}

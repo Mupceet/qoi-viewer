@@ -1,371 +1,300 @@
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
- *--------------------------------------------------------------------------------------------*/
+ *--------------------------------------------------------------------------------------------
+ *
+ * QOI Custom Editor Provider for VS Code.
+ */
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
-import { Disposable } from './dispose';
-import { SizeStatusBarEntry } from './sizeStatusBarEntry';
-import { Scale, ZoomStatusBarEntry } from './zoomStatusBarEntry';
-import { BinarySizeStatusBarEntry } from './binarySizeStatusBarEntry';
-import { PNG } from 'pngjs';
 import * as fs from 'fs';
-import { Stream } from 'stream';
-import * as QOI from './decode';
+import * as path from 'path';
+import { decode as decodeQoi } from './decodeQoi';
+import { encode as encodePng } from './encodePng';
+import { InfoStatusBarEntry } from './infoStatusBarEntry';
+import { Scale, ZoomStatusBarEntry } from './zoomStatusBarEntry';
 
-const localize = nls.loadMessageBundle();
+const LOG_PREFIX = '[QOI Viewer]';
+const CHUNK_BYTE_LIMIT = 512 * 1024; // 512KB per chunk for large images
 
-export class PreviewManager implements vscode.CustomReadonlyEditorProvider {
+export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
+    public static readonly viewType = 'qoi.previewEditor';
 
-	public static readonly viewType = 'qoi.previewEditor';
+    private activeWebviewPanel: vscode.WebviewPanel | undefined;
+    private activeUri: vscode.Uri | undefined;
+    private readonly previews = new Map<vscode.WebviewPanel, { id: string; imageInfo: string | undefined; imageZoom: Scale | undefined }>();
 
-	private readonly _previews = new Set<Preview>();
-	private _activePreview: Preview | undefined;
+    constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly infoStatusBarEntry: InfoStatusBarEntry,
+        private readonly zoomStatusBarEntry: ZoomStatusBarEntry,
+    ) {}
 
-	constructor(
-		private readonly extensionRoot: vscode.Uri,
-		private readonly sizeStatusBarEntry: SizeStatusBarEntry,
-		private readonly binarySizeStatusBarEntry: BinarySizeStatusBarEntry,
-		private readonly zoomStatusBarEntry: ZoomStatusBarEntry,
-	) { }
+    async openCustomDocument(
+        uri: vscode.Uri,
+        _openContext: vscode.CustomDocumentOpenContext,
+        _token: vscode.CancellationToken
+    ): Promise<vscode.CustomDocument> {
+        return { uri, dispose: () => {} };
+    }
 
-	public async openCustomDocument(uri: vscode.Uri) {
-		return { uri, dispose: () => { } };
-	}
+    async resolveCustomEditor(
+        document: vscode.CustomDocument,
+        webviewPanel: vscode.WebviewPanel,
+        _token: vscode.CancellationToken
+    ): Promise<void> {
+        webviewPanel.webview.options = {
+            enableScripts: true,
+        };
 
-	public async resolveCustomEditor(
-		document: vscode.CustomDocument,
-		webviewEditor: vscode.WebviewPanel,
-	): Promise<void> {
-		const preview = new Preview(this.extensionRoot, document.uri, webviewEditor, this.sizeStatusBarEntry, this.binarySizeStatusBarEntry, this.zoomStatusBarEntry);
-		this._previews.add(preview);
-		this.setActivePreview(preview);
+        this.activeWebviewPanel = webviewPanel;
+        this.activeUri = document.uri;
 
-		webviewEditor.onDidDispose(() => { this._previews.delete(preview); });
+        let currentUri = document.uri;
 
-		webviewEditor.onDidChangeViewState(() => {
-			if (webviewEditor.active) {
-				this.setActivePreview(preview);
-			} else if (this._activePreview === preview && !webviewEditor.active) {
-				this.setActivePreview(undefined);
-			}
-		});
-	}
+        const previewId = `${Date.now()}-${Math.random().toString()}`;
+        const previewState = { id: previewId, imageInfo: undefined as string | undefined, imageZoom: undefined as Scale | undefined };
+        this.previews.set(webviewPanel, previewState);
 
-	public get activePreview() { return this._activePreview; }
+        // Track active panel
+        webviewPanel.onDidChangeViewState(() => {
+            if (webviewPanel.active) {
+                this.activeWebviewPanel = webviewPanel;
+                this.activeUri = currentUri;
+                if (previewState.imageInfo) { this.infoStatusBarEntry.show(previewId, previewState.imageInfo); }
+                if (previewState.imageZoom) { this.zoomStatusBarEntry.show(previewId, previewState.imageZoom); }
+            } else if (this.activeWebviewPanel === webviewPanel) {
+                this.infoStatusBarEntry.hide(previewId);
+                this.zoomStatusBarEntry.hide(previewId);
+            }
+        });
 
-	private setActivePreview(value: Preview | undefined): void {
-		this._activePreview = value;
-		this.setPreviewActiveContext(!!value);
-	}
+        webviewPanel.onDidDispose(() => {
+            this.previews.delete(webviewPanel);
+            if (this.activeWebviewPanel === webviewPanel) {
+                this.infoStatusBarEntry.hide(previewId);
+                this.zoomStatusBarEntry.hide(previewId);
+                this.activeWebviewPanel = undefined;
+                this.activeUri = undefined;
+            }
+        });
 
-	private setPreviewActiveContext(value: boolean) {
-		vscode.commands.executeCommand('setContext', 'qoiFocus', value);
-	}
+        // Zoom status bar: user selects zoom level → forward to webview
+        this.zoomStatusBarEntry.onDidChangeScale(e => {
+            if (this.activeWebviewPanel) {
+                this.activeWebviewPanel.webview.postMessage({ type: 'setScale', scale: e.scale });
+            }
+        });
+
+        // File system watcher — auto-refresh on change, close on delete
+        const watcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(document.uri, '*')
+        );
+        webviewPanel.onDidDispose(() => watcher.dispose());
+
+        watcher.onDidChange(e => {
+            if (e.toString() === currentUri.toString()) {
+                this.sendImagePixels(webviewPanel, currentUri);
+            }
+        });
+
+        watcher.onDidDelete(e => {
+            if (e.toString() === document.uri.toString()) {
+                webviewPanel.dispose();
+            }
+        });
+
+        // Message handlers from webview
+        webviewPanel.webview.onDidReceiveMessage(async (message) => {
+            switch (message.type) {
+                case 'info':
+                    previewState.imageInfo = message.value;
+                    if (webviewPanel.active) {
+                        this.infoStatusBarEntry.show(previewId, message.value);
+                    }
+                    break;
+                case 'zoom':
+                    previewState.imageZoom = message.value;
+                    if (webviewPanel.active) {
+                        this.zoomStatusBarEntry.show(previewId, message.value);
+                    }
+                    break;
+                case 'showContextMenu': {
+                    const saveLabel = 'Save as PNG';
+                    const pick = await vscode.window.showQuickPick([saveLabel], { placeHolder: '' });
+                    if (pick === saveLabel) {
+                        this.exportPng();
+                    }
+                    break;
+                }
+                case 'exportPng':
+                    await this.handleExportPng(message.dataUrl, currentUri);
+                    break;
+            }
+        });
+
+        // Set up webview HTML
+        const cssUri = webviewPanel.webview.asWebviewUri(
+            vscode.Uri.joinPath(this.context.extensionUri, 'media', 'editor.css')
+        );
+        const jsUri = webviewPanel.webview.asWebviewUri(
+            vscode.Uri.joinPath(this.context.extensionUri, 'media', 'editor.js')
+        );
+        webviewPanel.webview.html = this.getHtml(cssUri, jsUri);
+
+        // Send initial image
+        await this.sendImagePixels(webviewPanel, document.uri);
+    }
+
+    /**
+     * Decode QOI file and send pixels to webview.
+     * Uses Transferable ArrayBuffer — single message for small images,
+     * chunked messages for large images.
+     */
+    private async sendImagePixels(
+        panel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        isSwitch: boolean = false
+    ): Promise<void> {
+        try {
+            const t0 = Date.now();
+            const fileData = await vscode.workspace.fs.readFile(uri);
+            const tRead = Date.now();
+            const image = decodeQoi(new Uint8Array(fileData));
+            const tDecode = Date.now();
+
+            const pixels = image.pixels; // Uint8ClampedArray (always RGBA)
+            const totalBytes = pixels.byteLength;
+            const rowBytes = image.width * 4;
+            const timing = { read: tRead - t0, decode: tDecode - tRead };
+
+            const meta = {
+                width: image.width,
+                height: image.height,
+                channels: image.channels,
+                colorspace: image.colorspace,
+                fileSize: fileData.byteLength,
+                uri: uri.toString(),
+                name: uri.path.split('/').pop() ?? '',
+                timing,
+            };
+
+            if (totalBytes <= CHUNK_BYTE_LIMIT) {
+                // Small image: single Transferable ArrayBuffer
+                const ab = pixels.buffer.slice(
+                    pixels.byteOffset,
+                    pixels.byteOffset + pixels.byteLength
+                );
+                (panel.webview as any).postMessage(
+                    { type: 'image', ...meta, data: ab },
+                    [ab]
+                );
+            } else {
+                // Large image: chunked Transferable ArrayBuffer
+                (panel.webview as any).postMessage({
+                    type: 'imageInit',
+                    ...meta,
+                });
+
+                const maxRowsPerChunk = Math.max(1, Math.floor(CHUNK_BYTE_LIMIT / rowBytes));
+                for (let offsetY = 0; offsetY < image.height; offsetY += maxRowsPerChunk) {
+                    const rows = Math.min(maxRowsPerChunk, image.height - offsetY);
+                    const start = offsetY * rowBytes;
+                    const end = start + rows * rowBytes;
+                    const slice = pixels.subarray(start, end);
+                    const ab = slice.buffer.slice(
+                        slice.byteOffset,
+                        slice.byteOffset + slice.byteLength
+                    );
+                    (panel.webview as any).postMessage(
+                        { type: 'imageChunk', offsetY, rows, data: ab },
+                        [ab]
+                    );
+                }
+
+                panel.webview.postMessage({ type: 'imageDone' });
+            }
+
+            console.log(
+                `${LOG_PREFIX} ${isSwitch ? 'switchFile' : 'openImage'} ` +
+                `${image.width}x${image.height}: ` +
+                `read=${timing.read}ms decode=${timing.decode}ms`
+            );
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            panel.webview.postMessage({ type: 'error', message: msg });
+        }
+    }
+
+    // ── PNG Export ─────────────────────────────────────────────────────
+
+    public exportPng(): void {
+        if (this.activeWebviewPanel) {
+            this.activeWebviewPanel.webview.postMessage({ type: 'requestExport' });
+        } else {
+            vscode.window.showWarningMessage('No QOI image is open.');
+        }
+    }
+
+    public async exportPngFile(fileUri: vscode.Uri): Promise<void> {
+        try {
+            const fileData = await vscode.workspace.fs.readFile(fileUri);
+            const image = decodeQoi(new Uint8Array(fileData));
+            const pngData = encodePng(image.width, image.height, image.pixels);
+
+            const sourcePath = fileUri.fsPath;
+            const dir = sourcePath.substring(0, sourcePath.lastIndexOf('/') + 1) || sourcePath.substring(0, sourcePath.lastIndexOf('\\') + 1);
+            const baseName = sourcePath.split(/[/\\]/).pop()?.replace(/\.qoi$/i, '') ?? 'image';
+            const defaultUri = vscode.Uri.file(dir + baseName + '.png');
+
+            const saveUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { 'PNG Image': ['png'] },
+                title: 'Export QOI as PNG',
+            });
+
+            if (!saveUri) { return; }
+
+            await vscode.workspace.fs.writeFile(saveUri, pngData);
+            vscode.window.showInformationMessage(`PNG exported: ${saveUri.fsPath}`);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            vscode.window.showErrorMessage(`Failed to export PNG: ${msg}`);
+        }
+    }
+
+    private async handleExportPng(dataUrl: string, sourceUri: vscode.Uri): Promise<void> {
+        const sourcePath = sourceUri.fsPath;
+        const dir = sourcePath.substring(0, sourcePath.lastIndexOf('/') + 1) || sourcePath.substring(0, sourcePath.lastIndexOf('\\') + 1);
+        const baseName = sourcePath.split(/[/\\]/).pop()?.replace(/\.qoi$/i, '') ?? 'image';
+        const defaultUri = vscode.Uri.file(dir + baseName + '.png');
+
+        const saveUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: { 'PNG Image': ['png'] },
+            title: 'Export QOI as PNG',
+        });
+
+        if (!saveUri) { return; }
+
+        try {
+            const base64 = dataUrl.split(',')[1];
+            const binary = Buffer.from(base64, 'base64');
+            await vscode.workspace.fs.writeFile(saveUri, binary);
+            vscode.window.showInformationMessage(`PNG exported: ${saveUri.fsPath}`);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            vscode.window.showErrorMessage(`Failed to export PNG: ${msg}`);
+        }
+    }
+
+    // ── HTML ───────────────────────────────────────────────────────────
+
+    private getHtml(cssUri: vscode.Uri, jsUri: vscode.Uri): string {
+        const htmlPath = path.join(this.context.extensionPath, 'media', 'editor.html');
+        let html = fs.readFileSync(htmlPath, 'utf8');
+        html = html.replace('{{cssUri}}', cssUri.toString());
+        html = html.replace('{{jsUri}}', jsUri.toString());
+        return html;
+    }
 }
-
-const enum PreviewState {
-	Disposed,
-	Visible,
-	Active,
-}
-
-class Preview extends Disposable {
-
-	private readonly id: string = `${Date.now()}-${Math.random().toString()}`;
-
-	private _previewState = PreviewState.Visible;
-	private _imageSize: string | undefined;
-	private _imageBinarySize: number | undefined;
-	private _imageZoom: Scale | undefined;
-
-	private readonly emptyPngDataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR42gEFAPr/AP///wAI/AL+Sr4t6gAAAABJRU5ErkJggg==';
-
-	constructor(
-		private readonly extensionRoot: vscode.Uri,
-		private readonly resource: vscode.Uri,
-		private readonly webviewEditor: vscode.WebviewPanel,
-		private readonly sizeStatusBarEntry: SizeStatusBarEntry,
-		private readonly binarySizeStatusBarEntry: BinarySizeStatusBarEntry,
-		private readonly zoomStatusBarEntry: ZoomStatusBarEntry,
-	) {
-		super();
-		const resourceRoot = resource.with({
-			path: resource.path.replace(/\/[^\/]+?\.\w+$/, '/'),
-		});
-
-		webviewEditor.webview.options = {
-			enableScripts: true,
-			enableForms: false,
-			localResourceRoots: [
-				resourceRoot,
-				extensionRoot,
-			]
-		};
-
-		this._register(webviewEditor.webview.onDidReceiveMessage(async message => {
-			switch (message.type) {
-				case 'size':
-					{
-						this._imageSize = message.value;
-						this.update();
-						break;
-					}
-				case 'zoom':
-					{
-						this._imageZoom = message.value;
-						this.update();
-						break;
-					}
-
-				case 'reopen-as-text':
-					{
-						vscode.commands.executeCommand('vscode.openWith', resource, 'default', webviewEditor.viewColumn);
-						break;
-					}
-
-				case 'savePng':
-					{
-						this.savePng();
-						break;
-					}
-
-				case 'showContextMenu':
-					{
-						const saveLabel = localize('preview.saveAsPng', 'Save as PNG');
-						const pick = await vscode.window.showQuickPick([saveLabel], { placeHolder: '' });
-						if (pick === saveLabel) {
-							this.savePng();
-						}
-						break;
-					}
-			}
-		}));
-
-		this._register(zoomStatusBarEntry.onDidChangeScale(e => {
-			if (this._previewState === PreviewState.Active) {
-				this.webviewEditor.webview.postMessage({ type: 'setScale', scale: e.scale });
-			}
-		}));
-
-		this._register(webviewEditor.onDidChangeViewState(() => {
-			this.update();
-			this.webviewEditor.webview.postMessage({ type: 'setActive', value: this.webviewEditor.active });
-		}));
-
-		this._register(webviewEditor.onDidDispose(() => {
-			if (this._previewState === PreviewState.Active) {
-				this.sizeStatusBarEntry.hide(this.id);
-				this.binarySizeStatusBarEntry.hide(this.id);
-				this.zoomStatusBarEntry.hide(this.id);
-			}
-			this._previewState = PreviewState.Disposed;
-		}));
-
-		const watcher = this._register(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(resource, '*')));
-		this._register(watcher.onDidChange(e => {
-			if (e.toString() === this.resource.toString()) {
-				this.render();
-			}
-		}));
-		this._register(watcher.onDidDelete(e => {
-			if (e.toString() === this.resource.toString()) {
-				this.webviewEditor.dispose();
-			}
-		}));
-
-		vscode.workspace.fs.stat(resource).then(({ size }) => {
-			this._imageBinarySize = size;
-			this.update();
-		});
-
-		this.render();
-		this.update();
-		this.webviewEditor.webview.postMessage({ type: 'setActive', value: this.webviewEditor.active });
-	}
-
-	public zoomIn() {
-		if (this._previewState === PreviewState.Active) {
-			this.webviewEditor.webview.postMessage({ type: 'zoomIn' });
-		}
-	}
-
-	public zoomOut() {
-		if (this._previewState === PreviewState.Active) {
-			this.webviewEditor.webview.postMessage({ type: 'zoomOut' });
-		}
-	}
-
-	private async savePng() {
-		try {
-			const data = await fs.promises.readFile(this.resource.fsPath);
-			let qoi = QOI.decode(data as Buffer, QOI.QOIChannels.RGBA);
-			const png = new PNG({ width: qoi.width, height: qoi.height });
-			png.data = qoi.pixels as Buffer;
-			const buf = await stream2buffer(png.pack());
-
-			const defaultUri = this.resource.with({ path: this.resource.path.replace(/\.[^.]+$/, '.png') });
-			const uri = await vscode.window.showSaveDialog({ defaultUri });
-			if (!uri) { return; }
-			await vscode.workspace.fs.writeFile(uri, buf);
-			vscode.window.showInformationMessage(localize('preview.saveSuccess', 'Image saved'));
-		} catch (ex) {
-			vscode.window.showErrorMessage(localize('preview.saveError', 'Failed to save image'));
-		}
-	}
-
-	private async render() {
-		if (this._previewState !== PreviewState.Disposed) {
-			this.webviewEditor.webview.html = await this.getWebviewContents();
-		}
-	}
-
-	private update() {
-		if (this._previewState === PreviewState.Disposed) {
-			return;
-		}
-
-		if (this.webviewEditor.active) {
-			this._previewState = PreviewState.Active;
-			this.sizeStatusBarEntry.show(this.id, this._imageSize || '');
-			this.binarySizeStatusBarEntry.show(this.id, this._imageBinarySize);
-			this.zoomStatusBarEntry.show(this.id, this._imageZoom || 'fit');
-		} else {
-			if (this._previewState === PreviewState.Active) {
-				this.sizeStatusBarEntry.hide(this.id);
-				this.binarySizeStatusBarEntry.hide(this.id);
-				this.zoomStatusBarEntry.hide(this.id);
-			}
-			this._previewState = PreviewState.Visible;
-		}
-	}
-
-	private async getWebviewContents(): Promise<string> {
-		const version = Date.now().toString();
-		const settings = {
-			src: await this.getResourcePath(this.webviewEditor, this.resource, version),
-		};
-
-		const nonce = getNonce();
-
-		const cspSource = this.webviewEditor.webview.cspSource;
-		return /* html */`<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8">
-
-	<!-- Disable pinch zooming -->
-	<meta name="viewport"
-		content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
-
-	<title>Image Preview</title>
-
-	<link rel="stylesheet" href="${escapeAttribute(this.extensionResource('/media/main.css'))}" type="text/css" media="screen" nonce="${nonce}">
-
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: ${cspSource}; script-src 'nonce-${nonce}'; style-src ${cspSource} 'nonce-${nonce}';">
-	<meta id="image-preview-settings" data-settings="${escapeAttribute(JSON.stringify(settings))}">
-</head>
-<body class="container image scale-to-fit loading">
-	<div class="loading-indicator"></div>
-	<div class="image-load-error">
-		<p>${localize('preview.imageLoadError', "An error occurred while loading the image.")}</p>
-		<a href="#" class="open-file-link">${localize('preview.imageLoadErrorLink', "Open file using VS Code's standard text/binary editor?")}</a>
-	</div>
-	<script src="${escapeAttribute(this.extensionResource('/media/main.js'))}" nonce="${nonce}"></script>
-</body>
-</html>`;
-	}
-
-	private async getResourcePath(webviewEditor: vscode.WebviewPanel, resource: vscode.Uri, version: string): Promise<string> {
-		if (resource.scheme === 'git') {
-			const stat = await vscode.workspace.fs.stat(resource);
-			if (stat.size === 0) {
-				return this.emptyPngDataUri;
-			}
-		}
-		// For large images encoding to PNG and base64 is expensive.
-		// Instead, schedule sending raw pixel buffer to the webview as a transferable ArrayBuffer
-		// and return a small placeholder image src. The webview will receive `qoiPixels` message
-		// and render using canvas.
-		this.sendPixels(resource);
-		return this.emptyPngDataUri;
-
-	}
-
-	private async sendPixels(resource: vscode.Uri) {
-		try {
-			const data = await fs.promises.readFile(resource.fsPath);
-			let qoi = QOI.decode(data as Buffer, QOI.QOIChannels.RGBA);
-			const buf: Buffer = qoi.pixels as Buffer;
-
-			const bytesPerPixel = qoi.channels; // typically 4
-			const rowBytes = qoi.width * bytesPerPixel;
-			const totalBytes = buf.length;
-
-			// If small enough, send in a single transferable message (backwards compatible)
-			const CHUNK_BYTE_LIMIT = 512 * 1024; // 512KB per chunk target
-			if (totalBytes <= CHUNK_BYTE_LIMIT) {
-				const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-				(this.webviewEditor.webview as any).postMessage({
-					type: 'qoiPixels',
-					width: qoi.width,
-					height: qoi.height,
-					channels: qoi.channels,
-					data: ab
-				}, [ab]);
-				return;
-			}
-
-			// For large images, send an init message then many chunk messages to reduce peak memory
-			(this.webviewEditor.webview as any).postMessage({ type: 'qoiPixelsInit', width: qoi.width, height: qoi.height, channels: qoi.channels });
-
-			const maxRowsPerChunk = Math.max(1, Math.floor(CHUNK_BYTE_LIMIT / rowBytes));
-			for (let offsetY = 0; offsetY < qoi.height; offsetY += maxRowsPerChunk) {
-				const rows = Math.min(maxRowsPerChunk, qoi.height - offsetY);
-				const start = offsetY * rowBytes;
-				const end = start + rows * rowBytes;
-				const slice = buf.subarray(start, end);
-				const ab = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
-				(this.webviewEditor.webview as any).postMessage({
-					type: 'qoiPixelsChunk',
-					offsetY: offsetY,
-					rows: rows,
-					data: ab
-				}, [ab]);
-			}
-
-			(this.webviewEditor.webview as any).postMessage({ type: 'qoiPixelsDone' });
-		} catch (ex) {
-			this.webviewEditor.webview.postMessage({ type: 'qoiError' });
-		}
-	}
-
-	private extensionResource(path: string) {
-		return this.webviewEditor.webview.asWebviewUri(this.extensionRoot.with({
-			path: this.extensionRoot.path + path
-		}));
-	}
-}
-
-function escapeAttribute(value: string | vscode.Uri): string {
-	return value.toString().replace(/"/g, '&quot;');
-}
-
-function getNonce() {
-	let text = '';
-	const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-	for (let i = 0; i < 64; i++) {
-		text += possible.charAt(Math.floor(Math.random() * possible.length));
-	}
-	return text;
-}
-
-async function stream2buffer(stream: Stream): Promise<Buffer> {
-	return new Promise<Buffer>((resolve, reject) => {
-		const _buf = Array<any>();
-		stream.on("data", chunk => _buf.push(chunk));
-		stream.on("end", () => resolve(Buffer.concat(_buf)));
-		stream.on("error", reject);
-	});
-} 

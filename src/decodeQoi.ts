@@ -32,14 +32,18 @@ export enum QOIColorSpace {
 }
 
 interface QOIFile {
-    pixels: Buffer;
+    pixels: Uint8ClampedArray;
     width: number;
     height: number;
     channels: QOIChannels;
     colorspace: QOIColorSpace;
 }
 
-export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
+function colorHash(r: number, g: number, b: number, a: number): number {
+    return (r * 3 + g * 5 + b * 7 + a * 11) % 64;
+}
+
+export function decode(data: Uint8Array): QOIFile {
     if (data.length < QOI_HEADER_SIZE + QOI_PADDING.length) {
         throw new Error('QOI.decode: file too short');
     }
@@ -74,12 +78,8 @@ export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
         throw new Error(`QOI.decode: illegal color space: 0x${colorspace.toString(16)}`);
     }
 
-    if (typeof convertChannels === 'undefined' || convertChannels === null) {
-        convertChannels = channels;
-    }
-
-    let pixelLength = width * height * convertChannels;
-    let result = Buffer.alloc(pixelLength);
+    let pixelLength = width * height * 4; // we always decode to RGBA, even if the file is RGB
+    let result = new Uint8ClampedArray(pixelLength);
     let index = new Uint8Array(64 * 4);
     let red = 0;
     let green = 0;
@@ -90,7 +90,7 @@ export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
     let run = 0;
     let dataPosition = QOI_HEADER_SIZE;
     let indexPosition = 0;
-    for (let pixelPosition = 0; pixelPosition < pixelLength; pixelPosition += convertChannels) {
+    for (let pixelPosition = 0; pixelPosition < pixelLength; pixelPosition += 4) {
         if (run > 0) {
             run--;
         } else if (dataPosition < chunksLength) {
@@ -106,26 +106,26 @@ export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
                 blue = data[dataPosition++];
                 alpha = data[dataPosition++];
             } else if ((byte1 & QOI_MASK_2) === QOI_OP_INDEX) {
-                let indexPos = (byte1 & ~QOI_MASK_2) << 2;
-                red = index[indexPos];
-                green = index[indexPos + 1];
-                blue = index[indexPos + 2];
-                alpha = index[indexPos + 3];
+                const idx = byte1 * 4;
+                red = index[idx];
+                green = index[idx + 1];
+                blue = index[idx + 2];
+                alpha = index[idx + 3];
             } else if ((byte1 & QOI_MASK_2) === QOI_OP_DIFF) {
-                red += ((byte1 >> 4) & 0x03) - 2;
-                green += ((byte1 >> 2) & 0x03) - 2;
-                blue += (byte1 & 0x03) - 2;
+                red = (red + ((byte1 >> 4) & 0x03) - 2) & 0xff;
+                green = (green + ((byte1 >> 2) & 0x03) - 2) & 0xff;
+                blue = (blue + (byte1 & 0x03) - 2) & 0xff;
             } else if ((byte1 & QOI_MASK_2) === QOI_OP_LUMA) {
                 let byte2 = data[dataPosition++];
                 let vg = (byte1 & 0x3f) - 32;
-                red += vg - 8 + ((byte2 >> 4) & 0x0f);
-                green += vg;
-                blue += vg - 8 + (byte2 & 0x0f);
+                red = (red + vg - 8 + ((byte2 >> 4) & 0x0f)) & 0xff;
+                green = (green + vg) & 0xff;
+                blue = (blue + vg - 8 + (byte2 & 0x0f)) & 0xff;
             } else if ((byte1 & QOI_MASK_2) === QOI_OP_RUN) {
                 run = byte1 & 0x3f;
             }
 
-            indexPosition = ((red * 3 + green * 5 + blue * 7 + alpha * 11) % 64) * 4;
+            indexPosition = colorHash(red, green, blue, alpha) * 4;
             index[indexPosition] = red;
             index[indexPosition + 1] = green;
             index[indexPosition + 2] = blue;
@@ -135,9 +135,7 @@ export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
         result[pixelPosition] = red;
         result[pixelPosition + 1] = green;
         result[pixelPosition + 2] = blue;
-        if (convertChannels === QOIChannels.RGBA) {
-            result[pixelPosition + 3] = alpha;
-        }
+        result[pixelPosition + 3] = alpha;
     }
 
     return {
@@ -145,6 +143,6 @@ export function decode(data: Buffer, convertChannels?: QOIChannels): QOIFile {
         width: width,
         height: height,
         colorspace: colorspace,
-        channels: convertChannels
+        channels: channels,
     };
 }

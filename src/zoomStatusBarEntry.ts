@@ -4,22 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
-import { PreviewStatusBarEntry as OwnedStatusBarEntry } from './ownedStatusBarEntry';
-
-const localize = nls.loadMessageBundle();
+import { PreviewStatusBarEntry } from './ownedStatusBarEntry';
 
 const selectZoomLevelCommandId = '_qoi.selectZoomLevel';
 
 export type Scale = number | 'fit';
 
-export class ZoomStatusBarEntry extends OwnedStatusBarEntry {
+export class ZoomStatusBarEntry extends PreviewStatusBarEntry {
 
 	private readonly _onDidChangeScale = this._register(new vscode.EventEmitter<{ scale: Scale }>());
 	public readonly onDidChangeScale = this._onDidChangeScale.event;
 
 	constructor() {
-		super('status.qoi.zoom', localize('zoomStatusBar.name', "Image Zoom"), vscode.StatusBarAlignment.Right, 102 /* to the left of editor size entry (101) */);
+		super('status.qoi.zoom', 'Image Zoom', vscode.StatusBarAlignment.Right, 102);
 
 		this._register(vscode.commands.registerCommand(selectZoomLevelCommandId, async () => {
 			type MyPickItem = vscode.QuickPickItem & { scale: Scale };
@@ -31,7 +28,7 @@ export class ZoomStatusBarEntry extends OwnedStatusBarEntry {
 			}));
 
 			const pick = await vscode.window.showQuickPick(options, {
-				placeHolder: localize('zoomStatusBar.placeholder', "Select zoom level")
+				placeHolder: 'Select zoom level'
 			});
 			if (pick) {
 				this._onDidChangeScale.fire({ scale: pick.scale });
@@ -46,8 +43,6 @@ export class ZoomStatusBarEntry extends OwnedStatusBarEntry {
 	}
 
 	private zoomLabel(scale: Scale): string {
-		return scale === 'fit'
-			? localize('zoomStatusBar.wholeImageLabel', "Whole Image")
-			: `${Math.round(scale * 100)}%`;
+		return scale === 'fit' ? 'Whole Image' : `${Math.round(scale * 100)}%`;
 	}
 }
