@@ -1,9 +1,11 @@
-# [QOI Viewer for Visual Studio Code](https://marketplace.visualstudio.com/items?itemName=mupceet.qoi-viewer)
+# QOI Viewer for Visual Studio Code
 
-## Features
+A lightweight viewer for [QOI](https://qoiformat.org/) (Quite OK Image) files.
 
-- View the "Quit OK Image"/"QOI" format file
-- Use mouse scroll wheel to zoom in and out
-- Support save as PNG
+1. Install the extension
+2. Open any `.qoi` file in VS Code — the preview appears automatically
+3. **Zoom:** scroll the mouse wheel to zoom in/out (centered on cursor)
+4. **Pan:** click and drag to pan around a zoomed image
+5. **Export:** right-click the preview and choose "Save as PNG", or use the Explorer context menu on a `.qoi` file
 
 **Enjoy!**
