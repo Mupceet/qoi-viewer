@@ -31,6 +31,9 @@ export function activate(context: vscode.ExtensionContext) {
         }),
         vscode.commands.registerCommand('qoiViewer.exportPngFile', (uri: vscode.Uri) => {
             provider.exportPngFile(uri);
+        }),
+        vscode.commands.registerCommand('qoiViewer.resetZoom', () => {
+            provider.resetZoom();
         })
     );
 }

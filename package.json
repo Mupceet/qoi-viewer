@@ -40,6 +40,11 @@
         "command": "qoiViewer.exportPngFile",
         "title": "Export QOI as PNG",
         "category": "QOI Viewer"
+      },
+      {
+        "command": "qoiViewer.resetZoom",
+        "title": "Reset Zoom",
+        "category": "QOI Viewer"
       }
     ],
     "menus": {
@@ -51,6 +56,10 @@
         {
           "command": "qoiViewer.exportPngFile",
           "when": "false"
+        },
+        {
+          "command": "qoiViewer.resetZoom",
+          "when": "activeCustomEditorId == 'qoi.previewEditor'"
         }
       ],
       "explorer/context": [
@@ -60,7 +69,14 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "qoiViewer.resetZoom",
+        "key": "space",
+        "when": "activeCustomEditorId == 'qoi.previewEditor'"
+      }
+    ]
   },
   "scripts": {
     "clean": "node -e \"fs.rmSync('out',{recursive:true,force:true})\"",

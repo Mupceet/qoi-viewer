@@ -231,6 +231,12 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
 
     // ── PNG Export ─────────────────────────────────────────────────────
 
+    public resetZoom(): void {
+        if (this.activeWebviewPanel) {
+            this.activeWebviewPanel.webview.postMessage({ type: 'setScale', scale: 'fit' });
+        }
+    }
+
     public exportPng(): void {
         if (this.activeWebviewPanel) {
             this.activeWebviewPanel.webview.postMessage({ type: 'requestExport' });
