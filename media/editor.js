@@ -24,6 +24,8 @@
 
     // Chunked transfer state
     var pendingImage = null;
+    var chunkQueue = [];
+    var chunkDraining = false;
 
     function computeBaseScale() {
         var cw = container.clientWidth;
@@ -35,14 +37,15 @@
     }
 
     function applyTransform() {
-        if (!imageLoaded) return;
         var w = Math.round(canvas.width * baseScale * zoomLevel);
         var h = Math.round(canvas.height * baseScale * zoomLevel);
         canvas.style.width = w + 'px';
         canvas.style.height = h + 'px';
         canvas.style.transform = 'translate(' + panX + 'px, ' + panY + 'px)';
         container.classList.toggle('pannable', zoomLevel > 1 && !isPanning);
-        vscode.postMessage({ type: 'zoom', value: zoomLevel });
+        if (imageLoaded) {
+            vscode.postMessage({ type: 'zoom', value: zoomLevel });
+        }
     }
 
     function resetView() {
@@ -131,6 +134,26 @@
         vscode.postMessage({ type: 'info', value: msg.width + ' x ' + msg.height + '  |  ' + sizeStr });
     }
 
+    // ── Chunked rendering ──────────────────────────────────────────
+
+    function drainChunkQueue() {
+        // Render all queued chunks, then let the browser repaint
+        while (chunkQueue.length > 0) {
+            var msg = chunkQueue.shift();
+            var u8 = new Uint8ClampedArray(msg.data);
+            var chunkImageData = new ImageData(u8, canvas.width, msg.rows);
+            ctx.putImageData(chunkImageData, 0, msg.offsetY);
+        }
+        chunkDraining = false;
+    }
+
+    function scheduleChunkDrain() {
+        if (!chunkDraining) {
+            chunkDraining = true;
+            requestAnimationFrame(drainChunkQueue);
+        }
+    }
+
     // ── Message handling ───────────────────────────────────────────
 
     window.addEventListener('message', function (e) {
@@ -168,18 +191,24 @@
                     timing: msg.timing,
                     _startTime: performance.now(),
                 };
+                chunkQueue = [];
+                chunkDraining = false;
                 canvas.width = msg.width;
                 canvas.height = msg.height;
                 canvas.style.display = 'block';
                 errorDiv.style.display = 'none';
+                zoomLevel = 1;
+                panX = 0;
+                panY = 0;
+                computeBaseScale();
+                applyTransform();
                 break;
             }
 
-            // Chunked transfer: chunk
+            // Chunked transfer: chunk — queue and render on next frame
             case 'imageChunk': {
-                var u8 = new Uint8ClampedArray(msg.data);
-                var chunkImageData = new ImageData(u8, canvas.width, msg.rows);
-                ctx.putImageData(chunkImageData, 0, msg.offsetY);
+                chunkQueue.push(msg);
+                scheduleChunkDrain();
                 break;
             }
 
@@ -228,4 +257,7 @@
         computeBaseScale();
         applyTransform();
     });
+
+    // Signal the extension host that the webview is ready to receive messages
+    vscode.postMessage({ type: 'ready' });
 })();

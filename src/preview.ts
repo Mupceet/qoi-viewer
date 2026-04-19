@@ -15,7 +15,9 @@ import { InfoStatusBarEntry } from './infoStatusBarEntry';
 import { Scale, ZoomStatusBarEntry } from './zoomStatusBarEntry';
 
 const LOG_PREFIX = '[QOI Viewer]';
-const CHUNK_BYTE_LIMIT = 512 * 1024; // 512KB per chunk for large images
+const CHUNK_THRESHOLD = 8 * 1024 * 1024; // 8MB: use chunked transfer above this size
+const CHUNK_BYTE_LIMIT = 4 * 1024 * 1024; // 2MB per chunk
+const CHUNK_DELAY_MS = 0; // Set > 0 (e.g. 200) to debug progressive rendering
 
 export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'qoi.previewEditor';
@@ -130,6 +132,9 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'exportPng':
                     await this.handleExportPng(message.dataUrl, currentUri);
                     break;
+                case 'ready':
+                    this.sendImagePixels(webviewPanel, document.uri);
+                    break;
             }
         });
 
@@ -141,9 +146,6 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
             vscode.Uri.joinPath(this.context.extensionUri, 'media', 'editor.js')
         );
         webviewPanel.webview.html = this.getHtml(cssUri, jsUri);
-
-        // Send initial image
-        await this.sendImagePixels(webviewPanel, document.uri);
     }
 
     /**
@@ -179,7 +181,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                 timing,
             };
 
-            if (totalBytes <= CHUNK_BYTE_LIMIT) {
+            if (totalBytes <= CHUNK_THRESHOLD) {
                 // Small image: single Transferable ArrayBuffer
                 const ab = pixels.buffer.slice(
                     pixels.byteOffset,
@@ -210,6 +212,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                         { type: 'imageChunk', offsetY, rows, data: ab },
                         [ab]
                     );
+                    if (CHUNK_DELAY_MS > 0) { await new Promise(r => setTimeout(r, CHUNK_DELAY_MS)); }
                 }
 
                 panel.webview.postMessage({ type: 'imageDone' });
