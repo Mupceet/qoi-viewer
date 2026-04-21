@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Worker } from 'worker_threads';
 import { decode as decodeQoi } from './decodeQoi';
 import { encode as encodePng } from './encodePng';
 import { InfoStatusBarEntry } from './infoStatusBarEntry';
@@ -20,7 +21,7 @@ const CHUNK_BYTE_LIMIT = 4 * 1024 * 1024; // 2MB per chunk
 const CHUNK_DELAY_MS = 0; // Set > 0 (e.g. 200) to debug progressive rendering
 
 type PreDecodeResult =
-    | { success: true; image: ReturnType<typeof decodeQoi>; fileData: Uint8Array; timing: { read: number; decode: number } }
+    | { success: true; image: { pixels: ArrayBuffer; width: number; height: number; channels: number; colorspace: number }; timing: { read: number; decode: number } }
     | { success: false; errorMessage: string; timing: { read: number; decode: number } };
 
 export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
@@ -28,6 +29,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
 
     private activeWebviewPanel: vscode.WebviewPanel | undefined;
     private activeUri: vscode.Uri | undefined;
+    private decodeWorker: Worker | undefined;
     private readonly previews = new Map<vscode.WebviewPanel, { id: string; imageInfo: string | undefined; imageZoom: Scale | undefined }>();
 
     constructor(
@@ -61,6 +63,9 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         const previewId = `${Date.now()}-${Math.random().toString()}`;
         const previewState = { id: previewId, imageInfo: undefined as string | undefined, imageZoom: undefined as Scale | undefined };
         this.previews.set(webviewPanel, previewState);
+
+        // Abort previous pre-decode by terminating the worker (instant)
+        this.terminateWorker();
 
         // Start pre-decoding in parallel with webview init
         const resolveStart = Date.now();
@@ -154,7 +159,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                             `${LOG_PREFIX} preDecode was ready ` +
                             `${tReady - resolveStart - preDecodeMs}ms before webview`
                         );
-                        this.sendImagePixels(webviewPanel, document.uri, false, preDecodeResult);
+                        this.sendDecodedImage(webviewPanel, document.uri, preDecodeResult);
                     } else {
                         webviewPanel.webview.postMessage({ type: 'error', message: preDecodeResult.errorMessage! });
                     }
@@ -174,7 +179,124 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.html = this.getHtml(cssUri, jsUri);
     }
 
-    private async preDecode(uri: vscode.Uri): Promise<PreDecodeResult> {
+    private getOrCreateWorker(): Worker {
+        if (!this.decodeWorker) {
+            const workerPath = path.join(__dirname, 'decodeWorker.js');
+            this.decodeWorker = new Worker(workerPath);
+        }
+        return this.decodeWorker;
+    }
+
+    private terminateWorker(): void {
+        if (this.decodeWorker) {
+            this.decodeWorker.terminate();
+            this.decodeWorker = undefined;
+        }
+    }
+
+    private preDecode(uri: vscode.Uri): Promise<PreDecodeResult> {
+        return new Promise((resolve) => {
+            const t0 = Date.now();
+            let settled = false;
+            const worker = this.getOrCreateWorker();
+
+            const onMessage = (msg: any) => {
+                if (msg.type !== 'result' || settled) return;
+                settled = true;
+                worker.off('message', onMessage);
+                const timing = { read: Date.now() - t0 - msg.timing.decode, decode: msg.timing.decode };
+                if (msg.success) {
+                    console.log(
+                        `${LOG_PREFIX} preDecode done in ${timing.read + timing.decode}ms ` +
+                        `(read=${timing.read}, decode=${timing.decode})`
+                    );
+                    resolve({ success: true, image: msg.image, timing });
+                } else {
+                    console.log(`${LOG_PREFIX} preDecode failed: ${msg.errorMessage}`);
+                    resolve({ success: false, errorMessage: msg.errorMessage, timing });
+                }
+            };
+            worker.on('message', onMessage);
+
+            // Read file in main thread, then transfer buffer to worker (zero-copy)
+            vscode.workspace.fs.readFile(uri).then(fileData => {
+                if (settled) return;
+                const ab = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength) as ArrayBuffer;
+                worker.postMessage({ type: 'decode', data: ab }, [ab]);
+            }, e => {
+                if (settled) return;
+                settled = true;
+                worker.off('message', onMessage);
+                const errorMessage = e instanceof Error ? e.message : String(e);
+                resolve({ success: false, errorMessage, timing: { read: Date.now() - t0, decode: 0 } });
+            });
+        });
+    }
+
+    /**
+     * Send pre-decoded image pixels to webview.
+     */
+    private sendDecodedImage(
+        panel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        preDecoded: PreDecodeResult & { success: true }
+    ): void {
+        const { image, timing } = preDecoded;
+        const pixels = new Uint8ClampedArray(image.pixels);
+        const totalBytes = pixels.byteLength;
+        const rowBytes = image.width * 4;
+        const fileSize = image.width * image.height * 4; // approximate
+
+        const meta = {
+            width: image.width,
+            height: image.height,
+            channels: image.channels,
+            colorspace: image.colorspace,
+            fileSize,
+            uri: uri.toString(),
+            name: uri.path.split('/').pop() ?? '',
+            timing,
+        };
+
+        if (totalBytes <= CHUNK_THRESHOLD) {
+            const ab = pixels.buffer.slice(pixels.byteOffset, pixels.byteOffset + pixels.byteLength);
+            (panel.webview as any).postMessage(
+                { type: 'image', ...meta, data: ab },
+                [ab]
+            );
+        } else {
+            (panel.webview as any).postMessage({ type: 'imageInit', ...meta });
+            const maxRowsPerChunk = Math.max(1, Math.floor(CHUNK_BYTE_LIMIT / rowBytes));
+            for (let offsetY = 0; offsetY < image.height; offsetY += maxRowsPerChunk) {
+                const rows = Math.min(maxRowsPerChunk, image.height - offsetY);
+                const start = offsetY * rowBytes;
+                const end = start + rows * rowBytes;
+                const slice = pixels.subarray(start, end);
+                const ab = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+                (panel.webview as any).postMessage(
+                    { type: 'imageChunk', offsetY, rows, data: ab },
+                    [ab]
+                );
+            }
+            panel.webview.postMessage({ type: 'imageDone' });
+        }
+
+        console.log(
+            `${LOG_PREFIX} openImage ${image.width}x${image.height}: ` +
+            `read=${timing.read}ms decode=${timing.decode}ms`
+        );
+    }
+
+    /**
+     * Decode QOI file and send pixels to webview (used by file watcher).
+     * Uses Transferable ArrayBuffer — single message for small images,
+     * chunked messages for large images.
+     */
+    private async sendImagePixels(
+        panel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        isSwitch: boolean = false
+    ): Promise<void> {
         try {
             const t0 = Date.now();
             const fileData = await vscode.workspace.fs.readFile(uri);
@@ -182,44 +304,6 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
             const image = decodeQoi(new Uint8Array(fileData));
             const tDecode = Date.now();
             const timing = { read: tRead - t0, decode: tDecode - tRead };
-            console.log(
-                `${LOG_PREFIX} preDecode done in ${timing.read + timing.decode}ms ` +
-                `(read=${timing.read}, decode=${timing.decode})`
-            );
-            return { success: true, image, fileData, timing };
-        } catch (e) {
-            const errorMessage = e instanceof Error ? e.message : String(e);
-            console.log(`${LOG_PREFIX} preDecode failed: ${errorMessage}`);
-            return { success: false, errorMessage, timing: { read: 0, decode: 0 } };
-        }
-    }
-
-    /**
-     * Decode QOI file and send pixels to webview.
-     * Uses Transferable ArrayBuffer — single message for small images,
-     * chunked messages for large images.
-     */
-    private async sendImagePixels(
-        panel: vscode.WebviewPanel,
-        uri: vscode.Uri,
-        isSwitch: boolean = false,
-        preDecoded?: PreDecodeResult & { success: true }
-    ): Promise<void> {
-        try {
-            let image: ReturnType<typeof decodeQoi>;
-            let fileData: Uint8Array;
-            let timing: { read: number; decode: number };
-
-            if (preDecoded) {
-                ({ image, fileData, timing } = preDecoded);
-            } else {
-                const t0 = Date.now();
-                fileData = await vscode.workspace.fs.readFile(uri);
-                const tRead = Date.now();
-                image = decodeQoi(new Uint8Array(fileData));
-                const tDecode = Date.now();
-                timing = { read: tRead - t0, decode: tDecode - tRead };
-            }
 
             const pixels = image.pixels; // Uint8ClampedArray (always RGBA)
             const totalBytes = pixels.byteLength;
