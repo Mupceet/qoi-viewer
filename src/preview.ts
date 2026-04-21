@@ -19,6 +19,10 @@ const CHUNK_THRESHOLD = 8 * 1024 * 1024; // 8MB: use chunked transfer above this
 const CHUNK_BYTE_LIMIT = 4 * 1024 * 1024; // 2MB per chunk
 const CHUNK_DELAY_MS = 0; // Set > 0 (e.g. 200) to debug progressive rendering
 
+type PreDecodeResult =
+    | { success: true; image: ReturnType<typeof decodeQoi>; fileData: Uint8Array; timing: { read: number; decode: number } }
+    | { success: false; errorMessage: string; timing: { read: number; decode: number } };
+
 export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'qoi.previewEditor';
 
@@ -57,6 +61,12 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         const previewId = `${Date.now()}-${Math.random().toString()}`;
         const previewState = { id: previewId, imageInfo: undefined as string | undefined, imageZoom: undefined as Scale | undefined };
         this.previews.set(webviewPanel, previewState);
+
+        // Start pre-decoding in parallel with webview init
+        const resolveStart = Date.now();
+        let preDecodeResult: PreDecodeResult | undefined;
+        const preDecodePromise = this.preDecode(document.uri);
+        preDecodePromise.then(r => { preDecodeResult = r; });
 
         // Track active panel
         webviewPanel.onDidChangeViewState(() => {
@@ -132,9 +142,25 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                 case 'exportPng':
                     await this.handleExportPng(message.dataUrl, currentUri);
                     break;
-                case 'ready':
-                    this.sendImagePixels(webviewPanel, document.uri);
+                case 'ready': {
+                    const tReady = Date.now();
+                    if (!preDecodeResult) {
+                        console.log(`${LOG_PREFIX} webview ready, awaiting preDecode...`);
+                        preDecodeResult = await preDecodePromise;
+                    }
+                    if (preDecodeResult.success) {
+                        const preDecodeMs = preDecodeResult.timing.read + preDecodeResult.timing.decode;
+                        console.log(
+                            `${LOG_PREFIX} preDecode was ready ` +
+                            `${tReady - resolveStart - preDecodeMs}ms before webview`
+                        );
+                        this.sendImagePixels(webviewPanel, document.uri, false, preDecodeResult);
+                    } else {
+                        webviewPanel.webview.postMessage({ type: 'error', message: preDecodeResult.errorMessage! });
+                    }
+                    console.log(`${LOG_PREFIX} resolve→send: ${Date.now() - resolveStart}ms`);
                     break;
+                }
             }
         });
 
@@ -148,6 +174,26 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.html = this.getHtml(cssUri, jsUri);
     }
 
+    private async preDecode(uri: vscode.Uri): Promise<PreDecodeResult> {
+        try {
+            const t0 = Date.now();
+            const fileData = await vscode.workspace.fs.readFile(uri);
+            const tRead = Date.now();
+            const image = decodeQoi(new Uint8Array(fileData));
+            const tDecode = Date.now();
+            const timing = { read: tRead - t0, decode: tDecode - tRead };
+            console.log(
+                `${LOG_PREFIX} preDecode done in ${timing.read + timing.decode}ms ` +
+                `(read=${timing.read}, decode=${timing.decode})`
+            );
+            return { success: true, image, fileData, timing };
+        } catch (e) {
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            console.log(`${LOG_PREFIX} preDecode failed: ${errorMessage}`);
+            return { success: false, errorMessage, timing: { read: 0, decode: 0 } };
+        }
+    }
+
     /**
      * Decode QOI file and send pixels to webview.
      * Uses Transferable ArrayBuffer — single message for small images,
@@ -156,19 +202,28 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
     private async sendImagePixels(
         panel: vscode.WebviewPanel,
         uri: vscode.Uri,
-        isSwitch: boolean = false
+        isSwitch: boolean = false,
+        preDecoded?: PreDecodeResult & { success: true }
     ): Promise<void> {
         try {
-            const t0 = Date.now();
-            const fileData = await vscode.workspace.fs.readFile(uri);
-            const tRead = Date.now();
-            const image = decodeQoi(new Uint8Array(fileData));
-            const tDecode = Date.now();
+            let image: ReturnType<typeof decodeQoi>;
+            let fileData: Uint8Array;
+            let timing: { read: number; decode: number };
+
+            if (preDecoded) {
+                ({ image, fileData, timing } = preDecoded);
+            } else {
+                const t0 = Date.now();
+                fileData = await vscode.workspace.fs.readFile(uri);
+                const tRead = Date.now();
+                image = decodeQoi(new Uint8Array(fileData));
+                const tDecode = Date.now();
+                timing = { read: tRead - t0, decode: tDecode - tRead };
+            }
 
             const pixels = image.pixels; // Uint8ClampedArray (always RGBA)
             const totalBytes = pixels.byteLength;
             const rowBytes = image.width * 4;
-            const timing = { read: tRead - t0, decode: tDecode - tRead };
 
             const meta = {
                 width: image.width,

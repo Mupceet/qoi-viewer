@@ -1,5 +1,6 @@
 (function () {
     const vscode = acquireVsCodeApi();
+    const _startTime = performance.now();
 
     var canvas = document.getElementById('canvas');
     var ctx = canvas.getContext('2d');
@@ -139,7 +140,9 @@
 
         imageLoaded = true;
         resetView();
+        var perceivedMs = (performance.now() - _startTime).toFixed(1);
         vscode.postMessage({ type: 'info', value: msg.width + ' x ' + msg.height + '  |  ' + sizeStr });
+        console.log('[QOI Viewer webview] perceived latency: ' + perceivedMs + 'ms (webview init → render done)');
     }
 
     // ── Chunked rendering ──────────────────────────────────────────
