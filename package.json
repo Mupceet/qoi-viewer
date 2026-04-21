@@ -10,13 +10,14 @@
   "version": "0.4.2",
   "icon": "images/qoi_logo.png",
   "engines": {
-    "vscode": "^1.64.0"
+    "vscode": "^1.73.0"
   },
   "categories": [
     "Other"
   ],
   "activationEvents": [ ],
   "main": "./out/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "customEditors": [
       {
@@ -33,17 +34,17 @@
     "commands": [
       {
         "command": "qoiViewer.exportPng",
-        "title": "Export as PNG",
+        "title": "%command.exportPng%",
         "category": "QOI Viewer"
       },
       {
         "command": "qoiViewer.exportPngFile",
-        "title": "Export QOI as PNG",
+        "title": "%command.exportPngFile%",
         "category": "QOI Viewer"
       },
       {
         "command": "qoiViewer.resetZoom",
-        "title": "Reset Zoom",
+        "title": "%command.resetZoom%",
         "category": "QOI Viewer"
       }
     ],
@@ -86,7 +87,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.39",
-    "@types/vscode": "^1.64.0",
+    "@types/vscode": "^1.73.0",
     "typescript": "^5.3.0"
   }
 }

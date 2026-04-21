@@ -19,6 +19,7 @@ const LOG_PREFIX = '[QOI Viewer]';
 const CHUNK_THRESHOLD = 8 * 1024 * 1024; // 8MB: use chunked transfer above this size
 const CHUNK_BYTE_LIMIT = 4 * 1024 * 1024; // 2MB per chunk
 const CHUNK_DELAY_MS = 0; // Set > 0 (e.g. 200) to debug progressive rendering
+const STREAM_THRESHOLD = 32 * 1024 * 1024; // 32MB: stream decode above this pixel size
 
 type PreDecodeResult =
     | { success: true; image: { pixels: ArrayBuffer; width: number; height: number; channels: number; colorspace: number }; timing: { read: number; decode: number } }
@@ -70,8 +71,92 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         // Start pre-decoding in parallel with webview init
         const resolveStart = Date.now();
         let preDecodeResult: PreDecodeResult | undefined;
-        const preDecodePromise = this.preDecode(document.uri);
-        preDecodePromise.then(r => { preDecodeResult = r; });
+        let streamState: {
+            meta: { width: number; height: number; channels: number; colorspace: number; fileSize: number; uri: string; name: string };
+            bufferedChunks: { offsetY: number; rows: number; data: ArrayBuffer }[];
+            done: boolean;
+        } | undefined;
+        let streamRelay = false;
+
+        // Decode ready promise: resolves when worker responds (full result or stream init)
+        let decodeReadyResolve!: () => void;
+        const decodeReady = new Promise<void>(r => { decodeReadyResolve = r; });
+
+        // Worker message handler for both decode modes
+        const worker = this.getOrCreateWorker();
+        const onWorkerMessage = (msg: any) => {
+            if (msg.type === 'result') {
+                // Small file: full decode result
+                worker.off('message', onWorkerMessage);
+                const readMs = Date.now() - resolveStart - msg.timing.decode;
+                if (msg.success) {
+                    const timing = { read: readMs, decode: msg.timing.decode };
+                    console.log(
+                        `${LOG_PREFIX} preDecode done in ${timing.read + timing.decode}ms ` +
+                        `(read=${timing.read}, decode=${timing.decode})`
+                    );
+                    preDecodeResult = { success: true, image: msg.image, timing };
+                } else {
+                    preDecodeResult = { success: false, errorMessage: msg.errorMessage, timing: { read: readMs, decode: msg.timing.decode } };
+                }
+                decodeReadyResolve();
+            } else if (msg.type === 'streamInit') {
+                // Large file: streaming mode started
+                streamState = {
+                    meta: {
+                        width: msg.width, height: msg.height,
+                        channels: msg.channels, colorspace: msg.colorspace,
+                        fileSize: msg.fileSize,
+                        uri: document.uri.toString(),
+                        name: document.uri.path.split('/').pop() ?? '',
+                    },
+                    bufferedChunks: [],
+                    done: false,
+                };
+                console.log(`${LOG_PREFIX} preDecode streaming: first chunk at ${msg.timing.firstChunk}ms`);
+                decodeReadyResolve();
+            } else if (msg.type === 'streamChunk') {
+                if (streamRelay && this.activeWebviewPanel === webviewPanel) {
+                    (webviewPanel.webview as any).postMessage(
+                        { type: 'imageChunk', offsetY: msg.offsetY, rows: msg.rowCount, data: msg.data },
+                        [msg.data]
+                    );
+                } else if (streamState) {
+                    streamState.bufferedChunks.push({ offsetY: msg.offsetY, rows: msg.rowCount, data: msg.data });
+                }
+            } else if (msg.type === 'streamDone') {
+                worker.off('message', onWorkerMessage);
+                console.log(`${LOG_PREFIX} streamDecode complete: ${msg.timing.decode}ms, ${msg.chunkCount} chunks`);
+                if (streamRelay && this.activeWebviewPanel === webviewPanel) {
+                    webviewPanel.webview.postMessage({ type: 'imageDone' });
+                    console.log(`${LOG_PREFIX} resolve→streamDone: ${Date.now() - resolveStart}ms`);
+                } else if (streamState) {
+                    streamState.done = true;
+                }
+            } else if (msg.type === 'streamError') {
+                worker.off('message', onWorkerMessage);
+                const errorMessage = msg.errorMessage;
+                if (streamRelay && this.activeWebviewPanel === webviewPanel) {
+                    webviewPanel.webview.postMessage({ type: 'error', message: errorMessage });
+                } else {
+                    // Store error as full-decode failure so ready handler can pick it up
+                    preDecodeResult = { success: false, errorMessage, timing: { read: 0, decode: msg.timing.decode } };
+                    if (!streamState) { decodeReadyResolve(); }
+                }
+            }
+        };
+        worker.on('message', onWorkerMessage);
+
+        // Read file in main thread, then transfer to worker
+        vscode.workspace.fs.readFile(document.uri).then(fileData => {
+            const ab = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength) as ArrayBuffer;
+            worker.postMessage({ type: 'decode', data: ab, streamThreshold: STREAM_THRESHOLD }, [ab]);
+        }, e => {
+            worker.off('message', onWorkerMessage);
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            preDecodeResult = { success: false, errorMessage, timing: { read: Date.now() - resolveStart, decode: 0 } };
+            decodeReadyResolve();
+        });
 
         // Track active panel
         webviewPanel.onDidChangeViewState(() => {
@@ -137,7 +222,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                     }
                     break;
                 case 'showContextMenu': {
-                    const saveLabel = 'Save as PNG';
+                    const saveLabel = vscode.l10n.t('Save as PNG');
                     const pick = await vscode.window.showQuickPick([saveLabel], { placeHolder: '' });
                     if (pick === saveLabel) {
                         this.exportPng();
@@ -149,21 +234,38 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
                     break;
                 case 'ready': {
                     const tReady = Date.now();
-                    if (!preDecodeResult) {
-                        console.log(`${LOG_PREFIX} webview ready, awaiting preDecode...`);
-                        preDecodeResult = await preDecodePromise;
+                    await decodeReady;
+
+                    if (preDecodeResult) {
+                        // Small file: full decode
+                        if (preDecodeResult.success) {
+                            const preDecodeMs = preDecodeResult.timing.read + preDecodeResult.timing.decode;
+                            console.log(
+                                `${LOG_PREFIX} preDecode was ready ` +
+                                `${tReady - resolveStart - preDecodeMs}ms before webview`
+                            );
+                            this.sendDecodedImage(webviewPanel, document.uri, preDecodeResult);
+                        } else {
+                            webviewPanel.webview.postMessage({ type: 'error', message: preDecodeResult.errorMessage! });
+                        }
+                        console.log(`${LOG_PREFIX} resolve→send: ${Date.now() - resolveStart}ms`);
+                    } else if (streamState) {
+                        // Large file: flush buffered chunks, then relay future ones
+                        console.log(`${LOG_PREFIX} webview ready, flushing ${streamState.bufferedChunks.length} buffered chunks`);
+                        (webviewPanel.webview as any).postMessage({ type: 'imageInit', ...streamState.meta });
+                        for (const chunk of streamState.bufferedChunks) {
+                            (webviewPanel.webview as any).postMessage(
+                                { type: 'imageChunk', offsetY: chunk.offsetY, rows: chunk.rows, data: chunk.data },
+                                [chunk.data]
+                            );
+                        }
+                        if (streamState.done) {
+                            webviewPanel.webview.postMessage({ type: 'imageDone' });
+                        }
+                        streamRelay = true;
+                        streamState.bufferedChunks = [];
+                        console.log(`${LOG_PREFIX} resolve→streamStart: ${Date.now() - resolveStart}ms`);
                     }
-                    if (preDecodeResult.success) {
-                        const preDecodeMs = preDecodeResult.timing.read + preDecodeResult.timing.decode;
-                        console.log(
-                            `${LOG_PREFIX} preDecode was ready ` +
-                            `${tReady - resolveStart - preDecodeMs}ms before webview`
-                        );
-                        this.sendDecodedImage(webviewPanel, document.uri, preDecodeResult);
-                    } else {
-                        webviewPanel.webview.postMessage({ type: 'error', message: preDecodeResult.errorMessage! });
-                    }
-                    console.log(`${LOG_PREFIX} resolve→send: ${Date.now() - resolveStart}ms`);
                     break;
                 }
             }
@@ -194,47 +296,8 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         }
     }
 
-    private preDecode(uri: vscode.Uri): Promise<PreDecodeResult> {
-        return new Promise((resolve) => {
-            const t0 = Date.now();
-            let settled = false;
-            const worker = this.getOrCreateWorker();
-
-            const onMessage = (msg: any) => {
-                if (msg.type !== 'result' || settled) return;
-                settled = true;
-                worker.off('message', onMessage);
-                const timing = { read: Date.now() - t0 - msg.timing.decode, decode: msg.timing.decode };
-                if (msg.success) {
-                    console.log(
-                        `${LOG_PREFIX} preDecode done in ${timing.read + timing.decode}ms ` +
-                        `(read=${timing.read}, decode=${timing.decode})`
-                    );
-                    resolve({ success: true, image: msg.image, timing });
-                } else {
-                    console.log(`${LOG_PREFIX} preDecode failed: ${msg.errorMessage}`);
-                    resolve({ success: false, errorMessage: msg.errorMessage, timing });
-                }
-            };
-            worker.on('message', onMessage);
-
-            // Read file in main thread, then transfer buffer to worker (zero-copy)
-            vscode.workspace.fs.readFile(uri).then(fileData => {
-                if (settled) return;
-                const ab = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength) as ArrayBuffer;
-                worker.postMessage({ type: 'decode', data: ab }, [ab]);
-            }, e => {
-                if (settled) return;
-                settled = true;
-                worker.off('message', onMessage);
-                const errorMessage = e instanceof Error ? e.message : String(e);
-                resolve({ success: false, errorMessage, timing: { read: Date.now() - t0, decode: 0 } });
-            });
-        });
-    }
-
     /**
-     * Send pre-decoded image pixels to webview.
+     * Send pre-decoded image pixels to webview (small files, full decode).
      */
     private sendDecodedImage(
         panel: vscode.WebviewPanel,
@@ -398,7 +461,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
             const saveUri = await vscode.window.showSaveDialog({
                 defaultUri,
                 filters: { 'PNG Image': ['png'] },
-                title: 'Export QOI as PNG',
+                title: vscode.l10n.t('Export QOI as PNG'),
             });
 
             if (!saveUri) { return; }
@@ -420,7 +483,7 @@ export class QoiEditorProvider implements vscode.CustomReadonlyEditorProvider {
         const saveUri = await vscode.window.showSaveDialog({
             defaultUri,
             filters: { 'PNG Image': ['png'] },
-            title: 'Export QOI as PNG',
+            title: vscode.l10n.t('Export QOI as PNG'),
         });
 
         if (!saveUri) { return; }

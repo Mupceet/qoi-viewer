@@ -28,7 +28,7 @@ export class ZoomStatusBarEntry extends PreviewStatusBarEntry {
 			}));
 
 			const pick = await vscode.window.showQuickPick(options, {
-				placeHolder: 'Select zoom level'
+				placeHolder: vscode.l10n.t('Select zoom level')
 			});
 			if (pick) {
 				this._onDidChangeScale.fire({ scale: pick.scale });
@@ -43,6 +43,6 @@ export class ZoomStatusBarEntry extends PreviewStatusBarEntry {
 	}
 
 	private zoomLabel(scale: Scale): string {
-		return scale === 'fit' ? 'Whole Image' : `${Math.round(scale * 100)}%`;
+		return scale === 'fit' ? vscode.l10n.t('Whole Image') : `${Math.round(scale * 100)}%`;
 	}
 }
