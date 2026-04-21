@@ -1,5 +1,15 @@
 # Change Log
 
+## 0.4.2
+
+- Streaming decode for very large files (>32MB) with progressive chunked rendering
+- Worker Thread decode with instant abort for seamless large file switching
+- Pre-decode in parallel with webview init for faster image display
+- Pointer events with capture for reliable panning across iframe boundaries
+- Press Space to reset zoom in preview
+- i18n: Chinese localization using official VS Code l10n architecture
+- Command titles localized via package.nls.json
+
 ## 0.4.0
 
 - Rewrite architecture
