@@ -83,9 +83,9 @@
         applyTransform();
     }, { passive: false });
 
-    // Drag to pan
-    container.addEventListener('mousedown', function (e) {
-        if (!imageLoaded) return;
+    // Drag to pan (Pointer Events + setPointerCapture for cross-iframe release)
+    container.addEventListener('pointerdown', function (e) {
+        if (!imageLoaded || e.button !== 0) return;
         isPanning = true;
         panStartX = e.clientX;
         panStartY = e.clientY;
@@ -93,17 +93,25 @@
         panStartOffsetY = panY;
         container.classList.remove('pannable');
         container.classList.add('panning');
+        container.setPointerCapture(e.pointerId);
         e.preventDefault();
     });
 
-    window.addEventListener('mousemove', function (e) {
+    container.addEventListener('pointermove', function (e) {
         if (!isPanning) return;
         panX = panStartOffsetX + (e.clientX - panStartX);
         panY = panStartOffsetY + (e.clientY - panStartY);
         applyTransform();
     });
 
-    window.addEventListener('mouseup', function () {
+    container.addEventListener('pointerup', function () {
+        if (!isPanning) return;
+        isPanning = false;
+        container.classList.remove('panning');
+        container.classList.toggle('pannable', zoomLevel > 1);
+    });
+
+    container.addEventListener('lostpointercapture', function () {
         if (!isPanning) return;
         isPanning = false;
         container.classList.remove('panning');
